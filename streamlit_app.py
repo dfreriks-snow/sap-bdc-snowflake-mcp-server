@@ -76,6 +76,20 @@ def load_tools(conn: str, connector: str):
     return run_mcp("list")
 
 
+@st.cache_data(show_spinner="Loading catalog-linked databases…")
+def load_clds(conn: str, connector: str) -> list[str]:
+    """Call check_cld_asset_support in discovery mode; return existing CLD names."""
+    try:
+        out = run_mcp("call", "check_cld_asset_support", {})
+        start = out.find("{")
+        if start < 0:
+            return []
+        data = json.loads(out[start:])
+        return [c["name"] for c in data.get("catalog_linked_databases", []) if c.get("name")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def render_form(schema: dict, key_prefix: str) -> dict:
     """Render inputs from a JSON Schema; return the collected arguments dict."""
     props = schema.get("properties", {}) or {}
@@ -89,6 +103,22 @@ def render_form(schema: dict, key_prefix: str) -> dict:
         desc = spec.get("description", "")
         label = f"{name}{' *' if name in required else ''}"
         wkey = f"{key_prefix}:{name}"
+
+        # For the CLD tool, pre-populate `database` with existing catalog-linked
+        # databases discovered on the account (blank = list all CLDs).
+        if key_prefix == "check_cld_asset_support" and name == "database":
+            clds = load_clds(st.session_state.sf_conn, st.session_state.connector)
+            if clds:
+                st.caption(f"{len(clds)} catalog-linked database(s) found on this account.")
+            choice = st.selectbox(
+                label, options=clds, index=None, key=wkey,
+                placeholder="Leave blank to list all CLDs, or pick one to scan",
+                help=desc, accept_new_options=True,
+            )
+            if choice and str(choice).strip():
+                args[name] = str(choice).strip()
+            continue
+
         if typ == "boolean":
             args[name] = st.checkbox(label, key=wkey, help=desc)
         elif typ == "integer":
