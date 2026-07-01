@@ -188,6 +188,93 @@ def render_form(schema: dict, key_prefix: str) -> dict:
     return args
 
 
+def _json_start(text: str) -> int:
+    """Index of the first JSON object/array in a tool's text output, else -1."""
+    candidates = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+    return min(candidates) if candidates else -1
+
+
+def _render_value(key: str, value) -> None:
+    """Render one non-scalar top-level field (list or nested dict)."""
+    if isinstance(value, list):
+        st.markdown(f"**{key}** ({len(value)})")
+        if not value:
+            st.caption("— none —")
+        elif all(isinstance(x, dict) for x in value):
+            try:
+                st.dataframe(value, use_container_width=True, hide_index=True)
+            except Exception:  # noqa: BLE001
+                st.json(value)
+        else:
+            for item in value:
+                st.markdown(f"- {item}")
+    elif isinstance(value, dict):
+        st.markdown(f"**{key}**")
+        st.json(value)
+
+
+def render_result(out: str | None) -> None:
+    """Pretty-print a tool result: status banner + summary metrics + tables."""
+    if out is None:
+        return
+    st.markdown("### Result")
+
+    idx = _json_start(out)
+    preamble = (out[:idx] if idx > 0 else (out if idx < 0 else "")).strip()
+    payload = out[idx:].strip() if idx >= 0 else ""
+
+    if preamble:
+        head = preamble.splitlines()[0]
+        if head.startswith("❌") or "FAILED" in head.upper():
+            st.error(preamble)
+        elif head.startswith("⚠️") or "WARN" in head.upper():
+            st.warning(preamble)
+        elif head.startswith("ℹ️"):
+            st.info(preamble)
+        elif head.startswith("✅"):
+            st.success(preamble)
+        else:
+            st.write(preamble)
+
+    data = None
+    if payload:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            data = None
+
+    if data is None:
+        if not preamble:  # nothing structured — show the raw text
+            st.code(out)
+        return
+
+    if isinstance(data, list):
+        _render_value("items", data)
+        with st.expander("Raw JSON"):
+            st.json(data)
+        return
+
+    if not isinstance(data, dict):
+        st.write(data)
+        return
+
+    scalars = {k: v for k, v in data.items() if not isinstance(v, (list, dict))}
+    collections = {k: v for k, v in data.items() if isinstance(v, (list, dict))}
+
+    if scalars:
+        st.markdown("**Summary**")
+        st.table({
+            "field": list(scalars.keys()),
+            "value": ["" if v is None else str(v) for v in scalars.values()],
+        })
+
+    for k, v in collections.items():
+        _render_value(k, v)
+
+    with st.expander("Raw JSON"):
+        st.json(data)
+
+
 def main() -> None:
     st.title("🔗 SAP BDC Snowflake MCP")
     st.caption("A Streamlit MCP client for the SAP BDC Connect zero-copy connector tools.")
@@ -257,11 +344,7 @@ def main() -> None:
                     st.error(f"Call failed: {exc}")
                     out = None
             if out is not None:
-                st.markdown("**Result**")
-                try:
-                    st.json(json.loads(out))
-                except (json.JSONDecodeError, TypeError):
-                    st.code(out)
+                render_result(out)
 
 
 if __name__ == "__main__":
