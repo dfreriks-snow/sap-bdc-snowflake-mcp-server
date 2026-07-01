@@ -4,7 +4,7 @@ Provides 5 MCP tools:
   validate_tenant_hostname      — Pure-logic hostname validation (SAP Notes 3652165 & 3705747)
   validate_share_readiness      — Check Snowflake share + zerocopy connector readiness
   validate_snowflake_privileges — Check current role has required BDC Connect privileges
-  check_cld_asset_support       — Scan for object types unsupported by catalog-linked databases
+  check_cld_asset_support       — List existing catalog-linked databases, or scan one for unsupported object types
   list_unsupported_share_assets — List objects that cannot be shared via zerocopy connector
 """
 
@@ -75,6 +75,39 @@ def _scan_objects(
         return rows, len(rows), None
     except SnowflakeError as e:
         return [], 0, str(e)
+
+
+# Value of the SHOW DATABASES "kind" column that identifies a catalog-linked database.
+_CLD_KIND = "CATALOG-LINKED DATABASE"
+
+
+def _list_catalog_linked_databases(
+    client: SnowflakeClient,
+) -> tuple[list[dict], str | None]:
+    """Return existing catalog-linked databases (CLDs) on the account.
+
+    A CLD is a database mounted from an inbound share (e.g. a SAP BDC data
+    product consumed through the zero-copy connector). SHOW DATABASES reports
+    these with kind = 'CATALOG-LINKED DATABASE'. Returns (clds, error_or_None).
+    """
+    try:
+        rows = client.execute("SHOW DATABASES")
+    except SnowflakeError as e:
+        return [], str(e)
+
+    clds = []
+    for row in rows:
+        kind = str(row.get("kind") or "").upper().strip()
+        if kind != _CLD_KIND:
+            continue
+        clds.append({
+            "name": row.get("name"),
+            "owner": row.get("owner"),
+            "created_on": str(row.get("created_on")) if row.get("created_on") else None,
+            "comment": row.get("comment") or None,
+        })
+    clds.sort(key=lambda c: (c.get("name") or "").upper())
+    return clds, None
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +182,12 @@ SCHEMAS = [
     {
         "name": "check_cld_asset_support",
         "description": (
-            "Scan a Snowflake database (or schema) and flag object types that are NOT supported "
-            "for zero-copy catalog-linked-database consumption. "
+            "Inspect catalog-linked databases (CLDs) for SAP BDC zero-copy consumption. "
+            "If 'database' is omitted, discovers and lists the existing catalog-linked "
+            "databases already mounted on this Snowflake account (e.g. consumed SAP BDC "
+            "data products). If 'database' is provided, scans that database (or schema) and "
+            "flags object types NOT supported for CLD consumption, and reports whether the "
+            "target is itself a catalog-linked database. "
             "Supported: TABLE, VIEW, ICEBERG TABLE. "
             "Flagged: MATERIALIZED VIEW, EXTERNAL TABLE, DYNAMIC TABLE."
         ),
@@ -159,7 +196,10 @@ SCHEMAS = [
             "properties": {
                 "database": {
                     "type": "string",
-                    "description": "Database to scan",
+                    "description": (
+                        "Database to scan. If omitted, the tool instead lists the existing "
+                        "catalog-linked databases (CLDs) on the account."
+                    ),
                 },
                 "schema": {
                     "type": "string",
@@ -169,7 +209,7 @@ SCHEMAS = [
                     ),
                 },
             },
-            "required": ["database"],
+            "required": [],
         },
     },
     {
@@ -482,8 +522,38 @@ def handle_check_cld_asset_support(
     database = (arguments.get("database") or "").strip()
     schema = (arguments.get("schema") or "").strip() or None
 
+    # Discover existing catalog-linked databases on the account.
+    clds, cld_err = _list_catalog_linked_databases(client)
+    cld_names = {str(c.get("name") or "").upper() for c in clds}
+
+    # No database specified → list the existing CLDs (discovery mode).
     if not database:
-        return "❌ 'database' argument is required."
+        result = {
+            "mode": "discover_catalog_linked_databases",
+            "catalog_linked_database_count": len(clds),
+            "catalog_linked_databases": clds,
+            "source": "SHOW DATABASES WHERE kind = 'CATALOG-LINKED DATABASE'",
+            "note": (
+                "Catalog-linked databases are mounted from inbound shares such as SAP BDC "
+                "data products consumed through the zero-copy connector. "
+                "Re-run this tool with a 'database' argument to scan one for unsupported "
+                "object types."
+            ),
+        }
+        if cld_err:
+            return f"❌ Could not list databases: {cld_err}"
+        if not clds:
+            return (
+                "ℹ️ No catalog-linked databases found on this account. "
+                "Consume a SAP BDC data product via the zero-copy connector to create one.\n\n"
+                + json.dumps(result, indent=2)
+            )
+        listing = "\n".join(f"  • {c['name']}" for c in clds)
+        return (
+            f"✅ Found {len(clds)} catalog-linked database(s) on this account:\n"
+            f"{listing}\n\n"
+            + json.dumps(result, indent=2)
+        )
 
     rows, total, err = _scan_objects(client, database, schema)
     if err:
@@ -522,6 +592,8 @@ def handle_check_cld_asset_support(
     result = {
         "database": database,
         "schema": schema,
+        "is_catalog_linked_database": database.upper() in cld_names,
+        "existing_catalog_linked_databases": [c["name"] for c in clds],
         "inspected_count": total,
         "unsupported_count": len(flagged),
         "unsupported": flagged,

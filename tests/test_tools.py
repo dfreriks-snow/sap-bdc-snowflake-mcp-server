@@ -78,6 +78,19 @@ def test_generate_csn_template_from_share():
     assert "CUSTOMERS" in out and "definitions" in out
 
 
+def test_check_cld_asset_support_discovers_existing_clds():
+    h = validation_tools.HANDLERS["check_cld_asset_support"]
+    client = FakeClient(rows=[
+        {"name": "STD_DB", "kind": "STANDARD", "owner": "R", "created_on": None, "comment": None},
+        {"name": "SAP_HR_V1", "kind": "CATALOG-LINKED DATABASE", "owner": "R",
+         "created_on": None, "comment": None},
+    ])
+    out = h({}, client, CFG)  # no database → discovery mode
+    assert "SAP_HR_V1" in out
+    assert "STD_DB" not in out
+    assert '"catalog_linked_database_count": 1' in out
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
