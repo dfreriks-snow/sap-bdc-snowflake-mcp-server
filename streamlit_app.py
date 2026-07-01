@@ -527,6 +527,24 @@ def main() -> None:
         st.session_state.sf_conn, st.session_state.connector,
         st.session_state.conn_db, st.session_state.conn_schema,
     )
+
+    # Sidebar: list the connected entities (Snowflake + SAP BDC system).
+    with st.sidebar:
+        st.divider()
+        st.markdown("### 🔗 Connected entities")
+        st.markdown(f"**❄️ Snowflake account**  \n`{st.session_state.sf_conn}`")
+        st.markdown(f"**🔌 Zero-copy connector**  \n`{st.session_state.connector}`  ·  {len(tools)} tools")
+        if system:
+            dot = "🟢" if str(system["status"]).upper() == "CONNECTED" else "🔴"
+            st.markdown(
+                f"**🏢 SAP BDC system** {dot} {system['status']}  \n"
+                f"Partner: `{system['partner']}`  \n"
+                f"Host: `{system['host'] or '—'}`  \n"
+                f"{len(system['products'])} data products · {len(system['systems'])} source system(s)"
+            )
+        else:
+            st.caption("🏢 SAP BDC system — unavailable")
+
     if system:
         st.markdown('<div class="bdc-section">🏢 SAP BDC system</div>', unsafe_allow_html=True)
         products = system["products"]
