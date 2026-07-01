@@ -20,13 +20,104 @@ import streamlit as st
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-st.set_page_config(page_title="SAP BDC Snowflake MCP", page_icon="🔗", layout="wide")
+st.set_page_config(
+    page_title="SAP BDC ↔ Snowflake Console",
+    page_icon="🔗",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # Tools that mutate Snowflake / the connector — require explicit confirmation.
 WRITE_TOOLS = {
     "create_or_update_share", "create_or_update_share_csn", "publish_data_product",
     "delete_share", "provision_share", "cleanup_orphaned_data_product",
 }
+
+# Per-tool glyphs for a friendlier tool list.
+TOOL_ICONS = {
+    "list_shares": "📤", "get_share_details": "🔎", "list_recipients": "📥",
+    "create_or_update_share": "➕", "create_or_update_share_csn": "🧬",
+    "publish_data_product": "🚀", "delete_share": "🗑️", "provision_share": "⚙️",
+    "validate_tenant_hostname": "🌐", "validate_share_readiness": "🩺",
+    "validate_snowflake_privileges": "🔐", "check_cld_asset_support": "🗄️",
+    "list_unsupported_share_assets": "🚫", "validate_ord_metadata": "📋",
+    "generate_csn_template": "🧾", "diagnose_share_error": "🧭",
+    "cleanup_orphaned_data_product": "🧹",
+}
+
+
+def _tool_label(name: str) -> str:
+    return f"{TOOL_ICONS.get(name, '•')}  {name}"
+
+
+def inject_css() -> None:
+    """Global styling: gradient hero, metric cards, buttons, sidebar."""
+    st.markdown(
+        """
+        <style>
+          .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1400px; }
+
+          .bdc-hero {
+            background: linear-gradient(120deg, #0A6ED1 0%, #1E9BE0 55%, #29B5E8 100%);
+            border-radius: 18px; padding: 24px 30px; margin-bottom: 20px;
+            color: #ffffff; box-shadow: 0 10px 28px rgba(10,110,209,0.28);
+          }
+          .bdc-hero h1 { font-size: 1.65rem; margin: 0 0 6px 0; color: #fff; font-weight: 750; letter-spacing:.2px; }
+          .bdc-hero p  { margin: 0; opacity: .93; font-size: .97rem; max-width: 900px; }
+          .bdc-badges  { margin-top: 14px; }
+          .bdc-badge {
+            display: inline-block; background: rgba(255,255,255,0.16);
+            border: 1px solid rgba(255,255,255,0.40); color: #fff;
+            padding: 4px 12px; border-radius: 999px; font-size: .82rem;
+            margin-right: 8px; margin-top: 4px; font-weight: 600;
+          }
+
+          [data-testid="stMetric"] {
+            background: #ffffff; border: 1px solid #e6e9ef; border-radius: 14px;
+            padding: 16px 18px; box-shadow: 0 2px 10px rgba(16,30,54,0.06);
+            transition: transform .12s ease, box-shadow .12s ease;
+          }
+          [data-testid="stMetric"]:hover {
+            transform: translateY(-2px); box-shadow: 0 8px 20px rgba(16,30,54,0.10);
+          }
+          [data-testid="stMetricLabel"] p { font-size: .78rem; color: #5b6472; font-weight: 600; }
+          [data-testid="stMetricValue"] { color: #0A6ED1; font-weight: 750; }
+
+          .stButton > button {
+            border-radius: 10px; font-weight: 600; border: 1px solid #d8dee9;
+          }
+          .stButton > button:hover { border-color: #0A6ED1; color: #0A6ED1; }
+          .stButton > button[kind="primary"] {
+            background: linear-gradient(120deg, #0A6ED1, #1E9BE0);
+            border: none; color: #fff;
+          }
+
+          section[data-testid="stSidebar"] { background: #f6f9fd; border-right: 1px solid #e6e9ef; }
+          .bdc-section { font-size: 1.02rem; font-weight: 700; color: #1c2b45; margin: 2px 0 8px 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def hero(conn: str, connector: str, n_tools: int) -> None:
+    st.markdown(
+        f"""
+        <div class="bdc-hero">
+          <h1>🔗 SAP BDC&nbsp;↔&nbsp;Snowflake Connector Console</h1>
+          <p>Operate the SAP BDC Connect zero-copy connector — browse inbound data products and
+             catalog-linked databases, publish shares back to SAP BDC, and validate readiness —
+             all through the MCP toolset.</p>
+          <div class="bdc-badges">
+            <span class="bdc-badge">🧰 {n_tools} tools</span>
+            <span class="bdc-badge">❄️ {conn}</span>
+            <span class="bdc-badge">🔌 {connector}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 
 def _server_params() -> StdioServerParameters:
@@ -323,42 +414,45 @@ def render_result(out: str | None) -> None:
 
 
 def main() -> None:
-    st.title("🔗 SAP BDC Snowflake MCP")
-    st.caption("A Streamlit MCP client for the SAP BDC Connect zero-copy connector tools.")
+    inject_css()
 
     with st.sidebar:
-        st.subheader("Target")
+        st.markdown("### ❄️  Connection")
+        st.caption("Target Snowflake account & SAP BDC connector")
         st.session_state.sf_conn = st.text_input("Snowflake connection", value=st.session_state.get("sf_conn", "dfreriksdemo"))
         st.session_state.connector = st.text_input("Connector", value=st.session_state.get("connector", "SAP_BDC_CONNECT_ZC"))
         st.session_state.conn_db = st.text_input("Connector DB", value=st.session_state.get("conn_db", "SAP_BDC_CONNECT"))
         st.session_state.conn_schema = st.text_input("Connector schema", value=st.session_state.get("conn_schema", "PUBLIC"))
-        if st.button("🔄 Reconnect / reload tools", use_container_width=True):
+        st.divider()
+        if st.button("🔄  Reconnect / reload", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
+        st.caption("Powered by the SAP BDC Snowflake MCP server.")
 
     try:
         tools = load_tools(st.session_state.sf_conn, st.session_state.connector)
     except Exception as exc:  # noqa: BLE001
+        inject_css()
         st.error(f"Could not start / connect to the MCP server:\n\n{exc}")
         st.stop()
 
-    st.success(f"Connected — {len(tools)} tools available on connector "
-               f"`{st.session_state.connector}`.")
+    hero(st.session_state.sf_conn, st.session_state.connector, len(tools))
 
     kpis = load_kpis(
         st.session_state.sf_conn, st.session_state.connector,
         st.session_state.conn_db, st.session_state.conn_schema,
     )
     if kpis:
+        st.markdown('<div class="bdc-section">📊 Connector overview</div>', unsafe_allow_html=True)
         k0, k1, k2, k3 = st.columns(4)
-        k0.metric("Data products available from SAP BDC", kpis["data_products"],
+        k0.metric("📦 Data products from SAP BDC", kpis["data_products"],
                   help="Inbound SAP BDC data products visible to the connector "
                        "(SYSTEM$ZEROCOPY_CONNECTOR_LIST_SHARES).")
-        k1.metric("CLDs shared from BDC", kpis["clds"],
+        k1.metric("🗄️ CLDs shared from BDC", kpis["clds"],
                   help="Catalog-linked databases consumed inbound from SAP BDC.")
-        k2.metric("Shares published back to SAP BDC", kpis["shares_back"],
+        k2.metric("📤 Shares published back", kpis["shares_back"],
                   help="Snowflake shares associated with the connector (share_back).")
-        k3.metric("Columns shared from BDC", f"{kpis['columns']:,}",
+        k3.metric("🔢 Columns shared from BDC", f"{kpis['columns']:,}",
                   help="Total data columns across the inbound catalog-linked databases "
                        "(excludes INFORMATION_SCHEMA and internal schemas).")
     st.divider()
@@ -369,37 +463,41 @@ def main() -> None:
     left, right = st.columns([1, 2], gap="large")
 
     with left:
-        st.subheader("Tools")
+        st.markdown('<div class="bdc-section">🧰 Tools</div>', unsafe_allow_html=True)
         # Keep the selection valid and bind the radio directly to this key so
         # both the quick-action buttons and the radio drive the same state.
         if st.session_state.get("selected_tool") not in names:
             st.session_state["selected_tool"] = names[0]
 
-        st.caption("Quick actions (read-only)")
+        st.caption("⚡ Quick actions (read-only)")
         for quick in ("list_recipients", "list_shares", "validate_snowflake_privileges"):
-            if quick in by_name and st.button(f"▶ {quick}", key=f"q:{quick}", use_container_width=True):
+            if quick in by_name and st.button(_tool_label(quick), key=f"q:{quick}", use_container_width=True):
                 st.session_state["selected_tool"] = quick
                 st.session_state["autorun"] = quick
                 st.rerun()
         st.divider()
-        st.radio("All tools", names, key="selected_tool")
+        st.radio("All tools", names, key="selected_tool", format_func=_tool_label)
         selected = st.session_state["selected_tool"]
 
     with right:
         tool = by_name[selected]
-        st.subheader(selected)
-        st.caption(tool["description"])
-
         is_write = selected in WRITE_TOOLS
-        args = render_form(tool["schema"], key_prefix=selected)
 
-        confirmed = True
-        if is_write:
-            st.warning("⚠️ This tool modifies Snowflake / the connector.")
-            confirmed = st.checkbox("Yes, I want to run this write operation", key=f"confirm:{selected}")
+        with st.container(border=True):
+            badge = "✏️ write" if is_write else "👁️ read-only"
+            st.markdown(f"### {TOOL_ICONS.get(selected, '•')}  {selected}  &nbsp;`{badge}`")
+            st.caption(tool["description"])
 
-        autorun = st.session_state.pop("autorun", None) == selected
-        run = st.button("Run tool", type="primary", disabled=is_write and not confirmed)
+            args = render_form(tool["schema"], key_prefix=selected)
+
+            confirmed = True
+            if is_write:
+                st.warning("⚠️ This tool modifies Snowflake / the connector.")
+                confirmed = st.checkbox("Yes, run this write operation", key=f"confirm:{selected}")
+
+            autorun = st.session_state.pop("autorun", None) == selected
+            run = st.button("▶  Run tool", type="primary", use_container_width=True,
+                            disabled=is_write and not confirmed)
 
         if run or (autorun and not is_write):
             with st.spinner(f"Calling {selected}…"):
