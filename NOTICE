@@ -1,0 +1,21 @@
+# NOTICE
+
+This project is a **Snowflake port** of the Databricks-based **sap-bdc-mcp-server**
+by Mario DeFelipe (MIT License):
+
+    https://github.com/MarioDeFelipe/sap-bdc-mcp-server
+
+The original implementation targets Databricks (Unity Catalog, Delta Sharing
+recipients, `databricks-sdk`, `sap-bdc-connect-sdk`). This derivative work
+re-implements the same 17-tool surface against **Snowflake** technologies —
+specifically the **SAP BDC Connect zero-copy connector** (`ZEROCOPY CONNECTOR
+... PARTNER = SAP_BDC`), Snowflake shares, and catalog-linked databases — and is
+designed to run as an MCP server inside **Cortex Code**.
+
+Substantial portions of the platform-neutral logic (SAP-Note diagnostic rules,
+ORD metadata validation, tenant-hostname validation, CSN handling) are ported
+faithfully from the original. See `docs/CONVERSION.md` for the full
+Databricks → Snowflake mapping.
+
+Original work © 2025 SAP BDC MCP Server Contributors.
+Snowflake port © 2026 SAP BDC Snowflake MCP Server Contributors.

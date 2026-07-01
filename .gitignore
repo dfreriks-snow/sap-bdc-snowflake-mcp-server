@@ -1,0 +1,17 @@
+# Local secrets / config — never commit
+.env
+*.p8
+*.pem
+
+# Office temp/lock files
+~$*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
