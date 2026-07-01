@@ -131,6 +131,16 @@ def load_kpis(conn: str, connector: str, conn_db: str, conn_schema: str) -> dict
         clds = [x.strip() for x in (desc.get("catalog_linked_databases") or "").split(",") if x.strip()]
         shares = [x.strip() for x in (desc.get("shares") or "").split(",") if x.strip()]
 
+        # Data products available from SAP BDC (inbound), via the connector's share list.
+        data_products = 0
+        try:
+            raw = client.execute_scalar(
+                f"SELECT SYSTEM$ZEROCOPY_CONNECTOR_LIST_SHARES('{cfg.connector_fqn}')"
+            )
+            data_products = len(json.loads(raw)) if raw else 0
+        except Exception:  # noqa: BLE001
+            data_products = 0
+
         columns = 0
         for db in clds:
             try:
@@ -142,7 +152,12 @@ def load_kpis(conn: str, connector: str, conn_db: str, conn_schema: str) -> dict
                 if s == "INFORMATION_SCHEMA" or s.endswith("$"):  # skip internal schemas
                     continue
                 columns += 1
-        return {"clds": len(clds), "shares_back": len(shares), "columns": columns}
+        return {
+            "data_products": data_products,
+            "clds": len(clds),
+            "shares_back": len(shares),
+            "columns": columns,
+        }
     except Exception:  # noqa: BLE001
         return None
 
@@ -335,7 +350,10 @@ def main() -> None:
         st.session_state.conn_db, st.session_state.conn_schema,
     )
     if kpis:
-        k1, k2, k3 = st.columns(3)
+        k0, k1, k2, k3 = st.columns(4)
+        k0.metric("Data products available from SAP BDC", kpis["data_products"],
+                  help="Inbound SAP BDC data products visible to the connector "
+                       "(SYSTEM$ZEROCOPY_CONNECTOR_LIST_SHARES).")
         k1.metric("CLDs shared from BDC", kpis["clds"],
                   help="Catalog-linked databases consumed inbound from SAP BDC.")
         k2.metric("Shares published back to SAP BDC", kpis["shares_back"],
