@@ -359,26 +359,6 @@ def mount_data_product(conn: str, connector: str, conn_db: str, conn_schema: str
     return db_name
 
 
-@st.cache_data(show_spinner="Reading SAP Datasphere catalog…")
-def load_datasphere_catalog(base_url: str, token_url: str) -> dict | None:
-    """Fetch a spaces + asset-count overview from SAP Datasphere (read-only OData).
-
-    base_url/token_url are part of the cache key so a target change reloads; the
-    client also reads DATASPHERE_CLIENT_ID / _SECRET / _SCOPE from the environment.
-    """
-    try:
-        from sap_bdc_snowflake_mcp.datasphere_client import DatasphereClient
-
-        client = DatasphereClient(base_url=base_url or None, token_url=token_url or None)
-        if not client.configured:
-            return {"configured": False}
-        summary = client.catalog_summary()
-        summary["configured"] = True
-        return summary
-    except Exception as exc:  # noqa: BLE001
-        return {"configured": True, "error": str(exc)}
-
-
 def render_form(schema: dict, key_prefix: str) -> dict:
     """Render inputs from a JSON Schema; return the collected arguments dict."""
     props = schema.get("properties", {}) or {}
@@ -828,43 +808,6 @@ def main() -> None:
                             except Exception as exc:  # noqa: BLE001
                                 st.error(f"Mount failed: {exc}")
         st.divider()
-
-    # ---- SAP Datasphere catalog (read-only OData, separate from the connector) ----
-    from sap_bdc_snowflake_mcp.datasphere_client import DatasphereClient
-
-    st.markdown('<div class="bdc-section">🛰️ SAP Datasphere catalog</div>', unsafe_allow_html=True)
-    with st.expander("SAP Datasphere connection (OAuth 2.0)", expanded=False):
-        st.session_state.ds_base_url = st.text_input(
-            "Datasphere base URL", value=st.session_state.get("ds_base_url", os.getenv("DATASPHERE_BASE_URL", "")),
-            placeholder="https://your-tenant.us10.hcs.cloud.sap")
-        st.session_state.ds_token_url = st.text_input(
-            "Datasphere token URL", value=st.session_state.get("ds_token_url", os.getenv("DATASPHERE_TOKEN_URL", "")),
-            placeholder="https://your-tenant.authentication.us10.hana.ondemand.com/oauth/token")
-        st.caption("Client credentials are read from env `DATASPHERE_CLIENT_ID` / `DATASPHERE_CLIENT_SECRET` "
-                   "(add via `/secrets` and launch the app with inline injection). This uses the Datasphere "
-                   "consumption APIs directly — a different path from the zero-copy connector.")
-
-    ds_client = DatasphereClient(
-        base_url=st.session_state.get("ds_base_url") or None,
-        token_url=st.session_state.get("ds_token_url") or None,
-    )
-    if not ds_client.configured:
-        st.info("Not connected to SAP Datasphere. Provide the base + token URLs above and set "
-                "`DATASPHERE_CLIENT_ID` / `DATASPHERE_CLIENT_SECRET`, then reload — this surfaces the "
-                "full Datasphere catalog (spaces, tables, views) beyond what the connector shares.",
-                icon="🛰️")
-    elif st.button("🛰️ Load Datasphere catalog", use_container_width=False):
-        ds = load_datasphere_catalog(st.session_state.get("ds_base_url", ""),
-                                     st.session_state.get("ds_token_url", ""))
-        if ds and ds.get("error"):
-            st.error(f"Datasphere query failed: {ds['error']}")
-        elif ds and ds.get("configured"):
-            c1, c2 = st.columns(2)
-            c1.metric("🗂️ Datasphere spaces", ds.get("space_count", 0))
-            c2.metric("📊 Consumable assets", f"{ds.get('total_assets', 0):,}")
-            if ds.get("spaces"):
-                st.dataframe(pd.DataFrame(ds["spaces"]), use_container_width=True, hide_index=True)
-    st.divider()
 
     by_name = {t["name"]: t for t in tools}
     names = sorted(by_name)
