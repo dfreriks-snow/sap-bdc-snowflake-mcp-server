@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 
+import pandas as pd
 import streamlit as st
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -253,6 +254,71 @@ def load_kpis(conn: str, connector: str, conn_db: str, conn_schema: str) -> dict
         return None
 
 
+# Friendly labels for SAP BDC business-function namespace segments.
+BDC_FUNCTIONS = {
+    "workforce": "Workforce", "analytics": "Analytics",
+    "foundationobjects": "Foundation Objects", "learning": "Learning",
+    "bdcconnect": "BDC Connect", "recruiting": "Recruiting",
+    "compensation": "Compensation", "finance": "Finance",
+}
+
+
+def _bdc_function(namespace: str) -> str:
+    """Map an SAP ORD namespace (e.g. sap.bdc.sf.workforce) to a business function."""
+    seg = namespace.split(".")[-1] if namespace else ""
+    return BDC_FUNCTIONS.get(seg, seg.replace("_", " ").title() if seg else "Unknown")
+
+
+@st.cache_data(show_spinner="Reading SAP BDC system…")
+def load_bdc_system(conn: str, connector: str, conn_db: str, conn_schema: str) -> dict | None:
+    """Describe the connected SAP BDC system and its available data products by function."""
+    try:
+        from sap_bdc_snowflake_mcp.config import BDCConfig
+        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient
+
+        cfg = BDCConfig(
+            connection_name=conn, connector_name=connector,
+            connector_database=conn_db, connector_schema=conn_schema,
+        )
+        client = SnowflakeClient(cfg)
+        desc = client.execute(f"DESCRIBE ZEROCOPY CONNECTOR {cfg.connector_fqn}")[0]
+        try:
+            endpoint = json.loads(desc.get("config") or "{}").get("sap_bdc_connector_endpoint", "")
+        except json.JSONDecodeError:
+            endpoint = ""
+        host = endpoint.replace("https://", "").replace("http://", "").split("/")[0]
+
+        raw = client.execute_scalar(
+            f"SELECT SYSTEM$ZEROCOPY_CONNECTOR_LIST_SHARES('{cfg.connector_fqn}')"
+        )
+        products = []
+        for e in (json.loads(raw) if raw else []):
+            props = e.get("properties", {}) or {}
+            ordid = props.get("sap.ord.apiResource.ordId", "")
+            ns = ordid.split(":")[0] if ordid else ""
+            if not ns:
+                parts = (e.get("name") or "").split(":")
+                ns = parts[parts.index("ns") + 1] if "ns" in parts else ""
+            display = (e.get("display_name") or e.get("name") or "").split(" (")[0].strip()
+            products.append({
+                "Business function": _bdc_function(ns),
+                "Data product": display,
+                "Source system": props.get("sap.ord.systemInstance.name", ""),
+                "Status": e.get("status", ""),
+            })
+
+        return {
+            "partner": desc.get("partner", ""),
+            "status": desc.get("status", ""),
+            "host": host,
+            "endpoint": endpoint,
+            "products": products,
+            "systems": sorted({p["Source system"] for p in products if p["Source system"]}),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def render_form(schema: dict, key_prefix: str) -> dict:
     """Render inputs from a JSON Schema; return the collected arguments dict."""
     props = schema.get("properties", {}) or {}
@@ -456,6 +522,46 @@ def main() -> None:
                   help="Total data columns across the inbound catalog-linked databases "
                        "(excludes INFORMATION_SCHEMA and internal schemas).")
     st.divider()
+
+    system = load_bdc_system(
+        st.session_state.sf_conn, st.session_state.connector,
+        st.session_state.conn_db, st.session_state.conn_schema,
+    )
+    if system:
+        st.markdown('<div class="bdc-section">🏢 SAP BDC system</div>', unsafe_allow_html=True)
+        products = system["products"]
+        status_ok = str(system["status"]).upper() == "CONNECTED"
+        st.markdown(
+            f'<span class="bdc-badge" style="background:#eef4ff;border-color:#c9dcff;color:#0A6ED1;">'
+            f'{"🟢" if status_ok else "🔴"} {system["status"] or "UNKNOWN"}</span>'
+            f'<span class="bdc-badge" style="background:#eef4ff;border-color:#c9dcff;color:#0A6ED1;">'
+            f'🤝 {system["partner"]}</span>'
+            f'<span class="bdc-badge" style="background:#eef4ff;border-color:#c9dcff;color:#0A6ED1;">'
+            f'🌐 {system["host"] or "—"}</span>'
+            f'<span class="bdc-badge" style="background:#eef4ff;border-color:#c9dcff;color:#0A6ED1;">'
+            f'🖥️ {len(system["systems"])} source system(s)</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption(f"{len(products)} data products available from SAP BDC"
+                   + (f" · source systems: {', '.join(system['systems'])}" if system["systems"] else ""))
+
+        if products:
+            by_fn = (
+                pd.DataFrame(products)
+                .groupby("Business function").size()
+                .reset_index(name="Data products")
+                .sort_values("Data products", ascending=False)
+            )
+            c_left, c_right = st.columns([1, 1], gap="large")
+            with c_left:
+                st.markdown("**Available data products by SAP business function**")
+                st.bar_chart(by_fn.set_index("Business function"), height=260, color="#0A6ED1")
+            with c_right:
+                st.markdown("**Counts**")
+                st.dataframe(by_fn, use_container_width=True, hide_index=True)
+            with st.expander(f"📦 All available data products ({len(products)})"):
+                st.dataframe(pd.DataFrame(products), use_container_width=True, hide_index=True)
+        st.divider()
 
     by_name = {t["name"]: t for t in tools}
     names = sorted(by_name)
