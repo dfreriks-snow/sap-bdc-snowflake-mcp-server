@@ -90,6 +90,31 @@ def load_clds(conn: str, connector: str) -> list[str]:
         return []
 
 
+@st.cache_data(show_spinner="Loading schemas…")
+def load_schemas(conn: str, database: str) -> list[str]:
+    """List schemas in a database (excluding INFORMATION_SCHEMA) for the schema dropdown."""
+    if not database:
+        return []
+    try:
+        from sap_bdc_snowflake_mcp.config import BDCConfig
+        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient, quote_ident
+
+        client = SnowflakeClient(BDCConfig(connection_name=conn))
+        rows = client.execute(f"SHOW SCHEMAS IN DATABASE {quote_ident(database)}")
+        out = []
+        for r in rows:
+            n = r.get("name")
+            if not n:
+                continue
+            u = str(n).upper()
+            if u == "INFORMATION_SCHEMA" or u.endswith("$"):  # skip internal schemas
+                continue
+            out.append(n)
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def render_form(schema: dict, key_prefix: str) -> dict:
     """Render inputs from a JSON Schema; return the collected arguments dict."""
     props = schema.get("properties", {}) or {}
@@ -113,6 +138,23 @@ def render_form(schema: dict, key_prefix: str) -> dict:
             choice = st.selectbox(
                 label, options=clds, index=None, key=wkey,
                 placeholder="Leave blank to list all CLDs, or pick one to scan",
+                help=desc, accept_new_options=True,
+            )
+            if choice and str(choice).strip():
+                args[name] = str(choice).strip()
+            continue
+
+        # Once a database is chosen, offer its schemas as a dropdown.
+        if key_prefix == "check_cld_asset_support" and name == "schema":
+            db_choice = args.get("database")
+            if not db_choice:
+                st.caption("Select a database above to choose a schema (optional).")
+                continue
+            schemas = load_schemas(st.session_state.sf_conn, db_choice)
+            choice = st.selectbox(
+                label, options=schemas, index=None,
+                key=f"{wkey}:{db_choice}",  # reset when the database changes
+                placeholder="All schemas (leave blank), or pick one",
                 help=desc, accept_new_options=True,
             )
             if choice and str(choice).strip():
