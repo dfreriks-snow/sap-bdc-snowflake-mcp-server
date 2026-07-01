@@ -94,7 +94,7 @@ After adding, the `mcp__sap-bdc-snowflake__*` tools become available in Cortex C
 | `validate_share_readiness` | Share exists + has objects + connector CONNECTED |
 | `validate_snowflake_privileges` | Checks the connector privileges on the current role |
 | `validate_tenant_hostname` | SAP tenant hostname rules (SAP Notes 3652165 / 3705747) |
-| `check_cld_asset_support` | Flags object types unsupported for catalog-linked-database consumption |
+| `check_cld_asset_support` | Lists existing catalog-linked databases (call with no args), or scans one and flags object types unsupported for CLD consumption |
 | `list_unsupported_share_assets` | Flags assets that can't be shared to SAP BDC |
 | `generate_csn_template` | CSN template from a share's objects |
 | `validate_ord_metadata` | Validate ORD JSON before publishing |
