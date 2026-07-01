@@ -539,9 +539,134 @@ def render_result(out: str | None) -> None:
         st.json(data)
 
 
+@st.cache_data(show_spinner="Loading semantic views…")
+def load_semantic_views(conn: str) -> list[str]:
+    """List semantic views on the account as DB.SCHEMA.NAME."""
+    try:
+        from sap_bdc_snowflake_mcp.config import BDCConfig
+        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient
+
+        client = SnowflakeClient(BDCConfig(connection_name=conn))
+        rows = client.execute("SHOW SEMANTIC VIEWS IN ACCOUNT")
+        return sorted(
+            f'{r.get("database_name")}.{r.get("schema_name")}.{r.get("name")}'
+            for r in rows if r.get("name")
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _sv_desc(conn: str, fqn: str) -> list[dict]:
+    from sap_bdc_snowflake_mcp.config import BDCConfig
+    from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient
+
+    client = SnowflakeClient(BDCConfig(connection_name=conn))
+    return client.execute(f"DESC SEMANTIC VIEW {fqn}")
+
+
+def _table_columns(conn: str, fqn: str) -> dict:
+    from sap_bdc_snowflake_mcp.config import BDCConfig
+    from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient
+
+    client = SnowflakeClient(BDCConfig(connection_name=conn))
+    rows = client.execute(f"DESC TABLE {fqn}")
+    cols, keys = [], []
+    for r in rows:
+        nm = r.get("name")
+        if not nm:
+            continue
+        cols.append({"name": nm, "type": r.get("type"),
+                     "comment": r.get("comment"), "nullable": r.get("null?")})
+        if str(r.get("primary key") or "").upper() == "Y":
+            keys.append(nm)
+    return {"columns": cols, "keys": keys}
+
+
+def render_publish_page() -> None:
+    """Page: generate the share-back SQL + CSN for publishing a Snowflake object to SAP BDC."""
+    import json as _json
+
+    from sap_bdc_snowflake_mcp import csn_builder as cb
+
+    st.markdown(
+        '<div class="bdc-hero"><h1>📤 Publish to SAP BDC</h1>'
+        '<p>Generate the CSN document (from a Snowflake table or semantic model) and the '
+        'share-back SQL needed to publish a Snowflake data product to SAP BDC via the '
+        'zero-copy connector.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    conn = st.session_state.get("sf_conn", "dfreriksdemo")
+    connector_fqn = (f'{st.session_state.get("conn_db", "SAP_BDC_CONNECT")}.'
+                     f'{st.session_state.get("conn_schema", "PUBLIC")}.'
+                     f'{st.session_state.get("connector", "SAP_BDC_CONNECT_ZC")}')
+
+    source = st.radio("Source object", ["Semantic view (semantic model)", "Table / View"],
+                      horizontal=True)
+    namespace = st.text_input("CSN namespace", value="sap.snowflake",
+                              help="ORD-style namespace prefix for the CSN entity ids.")
+
+    sv = fqn = db = schema = table = None
+    if source.startswith("Semantic"):
+        svs = load_semantic_views(conn)
+        sv = st.selectbox("Semantic view", options=svs, index=None,
+                          placeholder="Pick a semantic view")
+        default_share = (sv.split(".")[-1] + "_SHARE") if sv else "MY_DATA_PRODUCT_SHARE"
+    else:
+        c1, c2, c3 = st.columns(3)
+        db = c1.text_input("Database")
+        schema = c2.text_input("Schema")
+        table = c3.text_input("Table / View")
+        fqn = f"{db}.{schema}.{table}" if (db and schema and table) else ""
+        default_share = (table + "_SHARE") if table else "MY_DATA_PRODUCT_SHARE"
+
+    c1, c2 = st.columns(2)
+    share = c1.text_input("Share name", value=default_share)
+    title = c2.text_input("Data product title",
+                          value=(sv.split(".")[-1] if sv else (table or "My Data Product")))
+    description = st.text_area("Description", value="", height=80,
+                               placeholder="Business description of this data product")
+
+    ready = bool(sv) if source.startswith("Semantic") else bool(fqn)
+    if st.button("⚙️ Generate CSN + SQL", type="primary", disabled=not ready):
+        try:
+            if source.startswith("Semantic"):
+                rows = _sv_desc(conn, sv)
+                ns = f"{namespace}.{sv.split('.')[-1].lower()}"
+                csn, tables = cb.build_csn_from_semantic_view(rows, ns)
+            else:
+                info = _table_columns(conn, fqn)
+                csn = cb.build_csn_from_columns(namespace, table, info["columns"],
+                                                label=title, keys=info["keys"])
+                tables = [fqn]
+            ord_md = cb.build_ord_metadata(title, description)
+            sql = cb.build_publish_sql(share, tables, connector_fqn, description)
+
+            st.success(f"Generated CSN ({len(csn.get('definitions', {}))} entit(y/ies)), "
+                       f"ORD metadata, and share-back SQL for {len(tables)} table(s).")
+            tab_sql, tab_csn, tab_ord = st.tabs(["📜 Sharing SQL", "🧬 CSN document", "🏷️ ORD metadata"])
+            with tab_sql:
+                st.code(sql, language="sql")
+                st.download_button("⬇️ Download .sql", sql, file_name=f"{share}.sql")
+            with tab_csn:
+                st.json(csn)
+                st.download_button("⬇️ Download CSN JSON", _json.dumps(csn, indent=2),
+                                   file_name=f"{share}_csn.json")
+            with tab_ord:
+                st.json(ord_md)
+                st.download_button("⬇️ Download ORD JSON", _json.dumps(ord_md, indent=2),
+                                   file_name=f"{share}_ord.json")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Generation failed: {exc}")
+
+    st.caption("ℹ️ Publish-back requires Iceberg V3 tables (CATALOG='SNOWFLAKE', "
+               "STORAGE_SERIALIZATION_POLICY='COMPATIBLE', ENABLE_ICEBERG_MERGE_ON_READ=FALSE). "
+               "The generated SQL creates the share and associates it with the connector; run the "
+               "final publish via the `publish_data_product` tool with the CSN + ORD payloads.")
+
+
 def main() -> None:
     inject_css()
-
     with st.sidebar:
         st.markdown("### ❄️  Connection")
         st.caption("Target Snowflake account & SAP BDC connector")
@@ -558,10 +683,16 @@ def main() -> None:
             help="Link to the SAP BDC catalog UI where the full set of data products is browsed and subscribed.",
         )
         st.divider()
+        page = st.radio("📄 Page", ["🔗 Connector Console", "📤 Publish to SAP BDC"], key="app_page")
+        st.divider()
         if st.button("🔄  Reconnect / reload", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         st.caption("Powered by the SAP BDC Snowflake MCP server.")
+
+    if page == "📤 Publish to SAP BDC":
+        render_publish_page()
+        return
 
     try:
         tools = load_tools(st.session_state.sf_conn, st.session_state.connector)
