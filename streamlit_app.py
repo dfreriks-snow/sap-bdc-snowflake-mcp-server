@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 
 import pandas as pd
@@ -274,7 +275,7 @@ def load_bdc_system(conn: str, connector: str, conn_db: str, conn_schema: str) -
     """Describe the connected SAP BDC system and its available data products by function."""
     try:
         from sap_bdc_snowflake_mcp.config import BDCConfig
-        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient
+        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient, quote_ident
 
         cfg = BDCConfig(
             connection_name=conn, connector_name=connector,
@@ -300,12 +301,27 @@ def load_bdc_system(conn: str, connector: str, conn_db: str, conn_schema: str) -
                 parts = (e.get("name") or "").split(":")
                 ns = parts[parts.index("ns") + 1] if "ns" in parts else ""
             display = (e.get("display_name") or e.get("name") or "").split(" (")[0].strip()
+            linked = [c.get("name") for c in (e.get("catalog_linked_databases") or []) if c.get("name")]
             products.append({
                 "Business function": _bdc_function(ns),
                 "Data product": display,
                 "Source system": props.get("sap.ord.systemInstance.name", ""),
                 "Status": e.get("status", ""),
+                "Linked database": linked[0] if linked else "",
+                "_share": f"shares/{e.get('name')}" if e.get("name") else "",
+                "_resource": (e.get("name") or "").split(":r:")[-1].split(":v:")[0] if ":r:" in (e.get("name") or "") else display,
             })
+
+        # Derive the connector's internal catalog id from any existing CLD (needed to mount more).
+        catalog_id = ""
+        mounted = [p["Linked database"] for p in products if p["Linked database"]]
+        if mounted:
+            try:
+                ddl = client.execute_scalar(f"SELECT GET_DDL('database', {quote_ident(mounted[0])})")
+                m = re.search(r"catalog = '(ZEROCOPY\$[0-9A-Fa-f]+)'", ddl or "")
+                catalog_id = m.group(1) if m else ""
+            except Exception:  # noqa: BLE001
+                catalog_id = ""
 
         return {
             "partner": desc.get("partner", ""),
@@ -313,10 +329,34 @@ def load_bdc_system(conn: str, connector: str, conn_db: str, conn_schema: str) -
             "host": host,
             "endpoint": endpoint,
             "products": products,
+            "catalog_id": catalog_id,
             "systems": sorted({p["Source system"] for p in products if p["Source system"]}),
         }
     except Exception:  # noqa: BLE001
         return None
+
+
+def mount_data_product(conn: str, connector: str, conn_db: str, conn_schema: str,
+                       db_name: str, catalog_id: str, share: str) -> str:
+    """Create a catalog-linked database for an available SAP BDC data product."""
+    from sap_bdc_snowflake_mcp.config import BDCConfig
+    from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient, quote_ident, quote_literal
+
+    cfg = BDCConfig(
+        connection_name=conn, connector_name=connector,
+        connector_database=conn_db, connector_schema=conn_schema,
+    )
+    client = SnowflakeClient(cfg)
+    sql = (
+        f"CREATE DATABASE {quote_ident(db_name)} LINKED_CATALOG = ("
+        f"catalog = {quote_literal(catalog_id)} "
+        f"catalog_name = {quote_literal(share)} "
+        f"namespace_mode = IGNORE_NESTED_NAMESPACE "
+        f"sync_interval_seconds = 86400 "
+        f"allowed_write_operations = NONE)"
+    )
+    client.execute(sql)
+    return db_name
 
 
 def render_form(schema: dict, key_prefix: str) -> dict:
@@ -489,6 +529,14 @@ def main() -> None:
         st.session_state.connector = st.text_input("Connector", value=st.session_state.get("connector", "SAP_BDC_CONNECT_ZC"))
         st.session_state.conn_db = st.text_input("Connector DB", value=st.session_state.get("conn_db", "SAP_BDC_CONNECT"))
         st.session_state.conn_schema = st.text_input("Connector schema", value=st.session_state.get("conn_schema", "PUBLIC"))
+        st.session_state.bdc_ui_url = st.text_input(
+            "SAP BDC UI URL",
+            value=st.session_state.get(
+                "bdc_ui_url",
+                "https://snowflake-eng-tdd.us10.hcs.cloud.sap/bdc-ui/index.html#/bdc_home",
+            ),
+            help="Link to the SAP BDC catalog UI where the full set of data products is browsed and subscribed.",
+        )
         st.divider()
         if st.button("🔄  Reconnect / reload", use_container_width=True):
             st.cache_data.clear()
@@ -563,7 +611,22 @@ def main() -> None:
         st.caption(f"{len(products)} data products available from SAP BDC"
                    + (f" · source systems: {', '.join(system['systems'])}" if system["systems"] else ""))
 
+        link_col, note_col = st.columns([1, 3])
+        with link_col:
+            if st.session_state.get("bdc_ui_url"):
+                st.link_button("🗂️ Browse full catalog in SAP BDC ↗",
+                               st.session_state.bdc_ui_url, use_container_width=True)
+        with note_col:
+            st.info(
+                "Snowflake only sees data products that SAP BDC has **shared to this connector** "
+                f"({len(products)} shown here). The full SAP BDC catalog (e.g. hundreds of products) "
+                "is browsed and **subscribed in the SAP BDC UI** — newly subscribed products then "
+                "appear here automatically and can be mounted below.",
+                icon="ℹ️",
+            )
+
         if products:
+            display_cols = ["Business function", "Data product", "Source system", "Status", "Linked database"]
             by_fn = (
                 pd.DataFrame(products)
                 .groupby("Business function").size()
@@ -578,7 +641,41 @@ def main() -> None:
                 st.markdown("**Counts**")
                 st.dataframe(by_fn, use_container_width=True, hide_index=True)
             with st.expander(f"📦 All available data products ({len(products)})"):
-                st.dataframe(pd.DataFrame(products), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(products)[display_cols],
+                             use_container_width=True, hide_index=True)
+
+            # Consume: mount data products that are shared to the connector but not yet linked.
+            st.markdown("**🔗 Consume data products → catalog-linked databases**")
+            unmounted = [p for p in products if not p["Linked database"]]
+            if not unmounted:
+                st.caption("✅ All data products shared to this connector are already mounted "
+                           "as catalog-linked databases.")
+            elif not system["catalog_id"]:
+                st.caption("⚠️ Cannot mount: no existing catalog-linked database to derive the "
+                           "connector catalog id from. Mount one product via SQL first.")
+            else:
+                labels = {f"{p['Data product']}  ·  {p['Business function']}": p for p in unmounted}
+                pick = st.selectbox("Data product to mount", options=list(labels),
+                                    index=None, placeholder="Select an unmounted data product")
+                if pick:
+                    prod = labels[pick]
+                    default_name = re.sub(r"[^0-9A-Za-z]+", "_", prod["_resource"]).strip("_").upper() + "_V1"
+                    db_name = st.text_input("New catalog-linked database name", value=default_name)
+                    st.warning("⚠️ This creates a new catalog-linked database in Snowflake.")
+                    ok = st.checkbox("Yes, create this catalog-linked database")
+                    if st.button("🚀 Mount data product", type="primary", disabled=not (ok and db_name.strip())):
+                        with st.spinner(f"Creating {db_name}…"):
+                            try:
+                                mount_data_product(
+                                    st.session_state.sf_conn, st.session_state.connector,
+                                    st.session_state.conn_db, st.session_state.conn_schema,
+                                    db_name.strip(), system["catalog_id"], prod["_share"],
+                                )
+                                st.success(f"✅ Mounted `{prod['Data product']}` as catalog-linked "
+                                           f"database `{db_name.strip()}`.")
+                                st.cache_data.clear()
+                            except Exception as exc:  # noqa: BLE001
+                                st.error(f"Mount failed: {exc}")
         st.divider()
 
     by_name = {t["name"]: t for t in tools}
