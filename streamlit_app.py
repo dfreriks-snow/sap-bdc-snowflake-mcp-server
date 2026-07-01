@@ -92,7 +92,7 @@ def load_clds(conn: str, connector: str) -> list[str]:
 
 @st.cache_data(show_spinner="Loading schemas…")
 def load_schemas(conn: str, database: str) -> list[str]:
-    """List schemas in a database (excluding INFORMATION_SCHEMA) for the schema dropdown."""
+    """List schemas in a database (excluding internal schemas) for the schema dropdown."""
     if not database:
         return []
     try:
@@ -113,6 +113,38 @@ def load_schemas(conn: str, database: str) -> list[str]:
         return out
     except Exception:  # noqa: BLE001
         return []
+
+
+@st.cache_data(show_spinner="Computing connector KPIs…")
+def load_kpis(conn: str, connector: str, conn_db: str, conn_schema: str) -> dict | None:
+    """Connector-level KPIs: inbound CLDs, share-back shares, and columns shared from BDC."""
+    try:
+        from sap_bdc_snowflake_mcp.config import BDCConfig
+        from sap_bdc_snowflake_mcp.snowflake_client import SnowflakeClient, quote_ident
+
+        cfg = BDCConfig(
+            connection_name=conn, connector_name=connector,
+            connector_database=conn_db, connector_schema=conn_schema,
+        )
+        client = SnowflakeClient(cfg)
+        desc = client.execute(f"DESCRIBE ZEROCOPY CONNECTOR {cfg.connector_fqn}")[0]
+        clds = [x.strip() for x in (desc.get("catalog_linked_databases") or "").split(",") if x.strip()]
+        shares = [x.strip() for x in (desc.get("shares") or "").split(",") if x.strip()]
+
+        columns = 0
+        for db in clds:
+            try:
+                rows = client.execute(f"SHOW COLUMNS IN DATABASE {quote_ident(db)}")
+            except Exception:  # noqa: BLE001
+                continue
+            for r in rows:
+                s = str(r.get("schema_name") or "").upper()
+                if s == "INFORMATION_SCHEMA" or s.endswith("$"):  # skip internal schemas
+                    continue
+                columns += 1
+        return {"clds": len(clds), "shares_back": len(shares), "columns": columns}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def render_form(schema: dict, key_prefix: str) -> dict:
@@ -297,6 +329,21 @@ def main() -> None:
 
     st.success(f"Connected — {len(tools)} tools available on connector "
                f"`{st.session_state.connector}`.")
+
+    kpis = load_kpis(
+        st.session_state.sf_conn, st.session_state.connector,
+        st.session_state.conn_db, st.session_state.conn_schema,
+    )
+    if kpis:
+        k1, k2, k3 = st.columns(3)
+        k1.metric("CLDs shared from BDC", kpis["clds"],
+                  help="Catalog-linked databases consumed inbound from SAP BDC.")
+        k2.metric("Shares published back to SAP BDC", kpis["shares_back"],
+                  help="Snowflake shares associated with the connector (share_back).")
+        k3.metric("Columns shared from BDC", f"{kpis['columns']:,}",
+                  help="Total data columns across the inbound catalog-linked databases "
+                       "(excludes INFORMATION_SCHEMA and internal schemas).")
+    st.divider()
 
     by_name = {t["name"]: t for t in tools}
     names = sorted(by_name)
