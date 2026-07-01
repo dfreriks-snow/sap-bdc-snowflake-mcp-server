@@ -218,20 +218,20 @@ def main() -> None:
 
     with left:
         st.subheader("Tools")
-        # Quick read-only actions
+        # Keep the selection valid and bind the radio directly to this key so
+        # both the quick-action buttons and the radio drive the same state.
+        if st.session_state.get("selected_tool") not in names:
+            st.session_state["selected_tool"] = names[0]
+
         st.caption("Quick actions (read-only)")
         for quick in ("list_recipients", "list_shares", "validate_snowflake_privileges"):
             if quick in by_name and st.button(f"▶ {quick}", key=f"q:{quick}", use_container_width=True):
                 st.session_state["selected_tool"] = quick
                 st.session_state["autorun"] = quick
+                st.rerun()
         st.divider()
-        selected = st.radio(
-            "All tools", names,
-            index=names.index(st.session_state.get("selected_tool", names[0]))
-            if st.session_state.get("selected_tool") in names else 0,
-            key="tool_radio",
-        )
-        st.session_state["selected_tool"] = selected
+        st.radio("All tools", names, key="selected_tool")
+        selected = st.session_state["selected_tool"]
 
     with right:
         tool = by_name[selected]
