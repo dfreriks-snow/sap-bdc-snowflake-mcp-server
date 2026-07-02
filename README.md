@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that manages **SAP Business Dat
 Cloud (BDC)** integration on **Snowflake** — via the **SAP BDC Connect zero-copy
 connector** — and runs inside **Cortex Code**.
 
-It exposes **17 tools** for discovering, provisioning, validating, publishing, and
+It exposes **20 tools** for discovering, provisioning, validating, publishing, and
 troubleshooting SAP BDC data products on Snowflake.
 
 > **Port note.** This is a Snowflake port of the Databricks-based
@@ -97,6 +97,9 @@ After adding, the `mcp__sap-bdc-snowflake__*` tools become available in Cortex C
 | `check_cld_asset_support` | Lists existing catalog-linked databases (call with no args), or scans one and flags object types unsupported for CLD consumption |
 | `list_unsupported_share_assets` | Flags assets that can't be shared to SAP BDC |
 | `generate_csn_template` | CSN template from a share's objects |
+| `validate_csn` | Structurally validate a CSN document (definitions, elements, cds.* types, keys) |
+| `diff_csn` | Classify CSN changes as breaking vs non-breaking between two versions |
+| `render_csn_docs` | Render a CSN document as Markdown |
 | `validate_ord_metadata` | Validate ORD JSON before publishing |
 | `diagnose_share_error` | Map an error to the relevant SAP Note + connector-state fix |
 | `cleanup_orphaned_data_product` | Orphaned data-product recovery (SAP Note 3720724) |
@@ -107,6 +110,11 @@ After adding, the `mcp__sap-bdc-snowflake__*` tools become available in Cortex C
 python3 -m pip install -e ".[dev]"
 pytest
 ```
+
+## Acknowledgments
+
+- Databricks original: [`sap-bdc-mcp-server`](https://github.com/MarioDeFelipe/sap-bdc-mcp-server) by Mario DeFelipe (MIT).
+- CSN quality tools (`validate_csn`, `diff_csn`, `render_csn_docs`) were **inspired by** the contract-checking design in [Rahul Sethi's SAP BDC MCP](https://github.com/rahulsethi/SAPBDCMCP) (PolyForm Noncommercial). No source was copied — see [`NOTICE`](NOTICE).
 
 ## License
 

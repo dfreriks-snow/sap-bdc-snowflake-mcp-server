@@ -35,12 +35,12 @@ class FakeClient:
         return self._scalar
 
 
-def test_seventeen_tools_registered():
+def test_all_tools_registered():
     names = []
     for m in _MODULES:
         names += [s["name"] for s in m.SCHEMAS]
-    assert len(names) == 17, f"expected 17 tools, got {len(names)}"
-    assert len(set(names)) == 17, "duplicate tool names"
+    assert len(names) == 20, f"expected 20 tools, got {len(names)}"
+    assert len(set(names)) == 20, "duplicate tool names"
 
 
 def test_schema_handler_contract():
@@ -89,6 +89,28 @@ def test_check_cld_asset_support_discovers_existing_clds():
     assert "SAP_HR_V1" in out
     assert "STD_DB" not in out
     assert '"catalog_linked_database_count": 1' in out
+
+
+def test_validate_csn_flags_missing_type_and_definitions():
+    h = metadata_tools.HANDLERS["validate_csn"]
+    good = {"definitions": {"ns.E": {"kind": "entity",
+            "elements": {"ID": {"type": "cds.String", "key": True}}}}}
+    assert "✅" in h({"csn": good}, None, CFG)
+    bad = {"definitions": {"ns.E": {"kind": "entity", "elements": {"ID": {}}}}}
+    assert "❌" in h({"csn": bad}, None, CFG)          # element missing 'type'
+    assert "❌" in h({"csn": {}}, None, CFG)            # no definitions
+
+
+def test_diff_csn_detects_breaking_and_safe_changes():
+    h = metadata_tools.HANDLERS["diff_csn"]
+    old = {"definitions": {"ns.E": {"kind": "entity",
+           "elements": {"A": {"type": "cds.String"}, "B": {"type": "cds.Integer"}}}}}
+    # A removed (breaking), B widened Integer->Integer64 (non-breaking)
+    new = {"definitions": {"ns.E": {"kind": "entity",
+           "elements": {"B": {"type": "cds.Integer64"}}}}}
+    out = h({"old_csn": old, "new_csn": new}, None, CFG)
+    assert "ELEMENT_REMOVED" in out and "TYPE_WIDENED" in out
+    assert "breaking change(s) detected" in out
 
 
 if __name__ == "__main__":

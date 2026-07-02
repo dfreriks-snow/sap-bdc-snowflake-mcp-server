@@ -4,7 +4,7 @@ A Model Context Protocol server that manages SAP Business Data Cloud (BDC)
 integration on **Snowflake** via the SAP BDC Connect zero-copy connector.
 
 This is a port of the Databricks-based sap-bdc-mcp-server (Mario DeFelipe, MIT)
-to Snowflake technologies + Cortex Code. The 17 tools are aggregated from four
+to Snowflake technologies + Cortex Code. The 20 tools are aggregated from four
 modules; each handler has signature ``handle_x(arguments, client, cfg) -> str``.
 """
 
@@ -55,7 +55,7 @@ def _get_context() -> tuple[SnowflakeClient, BDCConfig]:
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    """Return all 17 SAP BDC (Snowflake) tools."""
+    """Return all 20 SAP BDC (Snowflake) tools."""
     return [Tool(**schema) for schema in ALL_SCHEMAS]
 
 

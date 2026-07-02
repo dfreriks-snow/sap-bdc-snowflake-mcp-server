@@ -7,7 +7,7 @@ by Mario DeFelipe (MIT License):
 
 The original implementation targets Databricks (Unity Catalog, Delta Sharing
 recipients, `databricks-sdk`, `sap-bdc-connect-sdk`). This derivative work
-re-implements the same 17-tool surface against **Snowflake** technologies —
+re-implements the same core tool surface against **Snowflake** technologies —
 specifically the **SAP BDC Connect zero-copy connector** (`ZEROCOPY CONNECTOR
 ... PARTNER = SAP_BDC`), Snowflake shares, and catalog-linked databases — and is
 designed to run as an MCP server inside **Cortex Code**.
@@ -19,3 +19,19 @@ Databricks → Snowflake mapping.
 
 Original work © 2025 SAP BDC MCP Server Contributors.
 Snowflake port © 2026 SAP BDC Snowflake MCP Server Contributors.
+
+---
+
+## Additional acknowledgment
+
+The CSN quality tools (`validate_csn`, `diff_csn`, `render_csn_docs`) were
+**inspired by** the contract-checking design in Rahul Sethi's SAP BDC MCP
+project:
+
+    https://github.com/rahulsethi/SAPBDCMCP  (PolyForm Noncommercial License 1.0.0)
+
+That project is licensed under a **noncommercial** license; **no source code or
+bundled schemas were copied**. The implementations in
+`src/sap_bdc_snowflake_mcp/csn_builder.py` are independent, original work that
+reproduces the general idea (CSN validation, breaking-change diffing, and
+Markdown rendering) for the SAP BDC Connect publish-back workflow.

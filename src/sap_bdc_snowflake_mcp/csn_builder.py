@@ -207,3 +207,155 @@ def build_publish_sql(share: str, tables: list[str], connector_fqn: str,
               "-- NOTE: publish-back requires Iceberg V3 tables (CATALOG='SNOWFLAKE',",
               "--       STORAGE_SERIALIZATION_POLICY='COMPATIBLE', ENABLE_ICEBERG_MERGE_ON_READ=FALSE)."]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CSN quality: validation, diff, and documentation.
+#
+# These capabilities were inspired by the contract-checking design in
+# Rahul Sethi's SAP BDC MCP project (https://github.com/rahulsethi/SAPBDCMCP,
+# PolyForm Noncommercial License). No source was copied — the logic below is an
+# independent implementation for the SAP BDC Connect publish workflow.
+# ---------------------------------------------------------------------------
+
+_KNOWN_CDS_TYPES = {
+    "cds.String", "cds.LargeString", "cds.Integer", "cds.Integer64", "cds.Decimal",
+    "cds.Double", "cds.Boolean", "cds.Date", "cds.Time", "cds.DateTime",
+    "cds.Timestamp", "cds.Binary", "cds.LargeBinary", "cds.UUID",
+}
+
+# CDS type widenings that are NOT breaking (old -> new).
+_SAFE_WIDENINGS = {
+    ("cds.String", "cds.LargeString"),
+    ("cds.Integer", "cds.Integer64"),
+    ("cds.Integer", "cds.Decimal"),
+    ("cds.Integer64", "cds.Decimal"),
+    ("cds.Decimal", "cds.Double"),
+}
+
+
+def validate_csn(csn: dict) -> dict:
+    """Structurally validate a CSN document. Returns {valid, errors, warnings}."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(csn, dict):
+        return {"valid": False, "errors": ["CSN root must be a JSON object."], "warnings": []}
+
+    defs = csn.get("definitions")
+    if not isinstance(defs, dict) or not defs:
+        errors.append("CSN must contain a non-empty 'definitions' object.")
+        defs = {}
+
+    for ename, edef in defs.items():
+        where = f"definitions['{ename}']"
+        if not isinstance(edef, dict):
+            errors.append(f"{where} must be an object.")
+            continue
+        kind = edef.get("kind")
+        if not kind:
+            warnings.append(f"{where} has no 'kind' (assuming 'entity').")
+        elif kind != "entity":
+            warnings.append(f"{where} kind is '{kind}' (expected 'entity').")
+        elements = edef.get("elements")
+        if not isinstance(elements, dict) or not elements:
+            errors.append(f"{where} must have a non-empty 'elements' object.")
+            continue
+        has_key = False
+        for cname, cdef in elements.items():
+            cwhere = f"{where}.elements['{cname}']"
+            if not isinstance(cdef, dict):
+                errors.append(f"{cwhere} must be an object.")
+                continue
+            ctype = cdef.get("type")
+            if not ctype:
+                errors.append(f"{cwhere} is missing 'type'.")
+            elif not isinstance(ctype, str):
+                errors.append(f"{cwhere} 'type' must be a string.")
+            elif ctype not in _KNOWN_CDS_TYPES:
+                warnings.append(f"{cwhere} type '{ctype}' is not a recognized cds.* type.")
+            if cdef.get("key"):
+                has_key = True
+        if not has_key:
+            warnings.append(f"{where} has no key element (no primary key).")
+
+    return {"valid": not errors, "errors": errors, "warnings": warnings,
+            "entity_count": len(defs)}
+
+
+def diff_csn(old_csn: dict, new_csn: dict) -> dict:
+    """Diff two CSN documents into breaking vs non-breaking changes."""
+    old_defs = (old_csn or {}).get("definitions") or {}
+    new_defs = (new_csn or {}).get("definitions") or {}
+    if not isinstance(old_defs, dict) or not isinstance(new_defs, dict):
+        return {"breaking": [{"code": "INVALID_INPUT", "message": "Invalid CSN structure."}],
+                "non_breaking": [], "summary": {"error": "invalid input"}}
+
+    breaking: list[dict] = []
+    non_breaking: list[dict] = []
+
+    old_names, new_names = set(old_defs), set(new_defs)
+    for name in sorted(old_names - new_names):
+        breaking.append({"code": "ENTITY_REMOVED", "entity": name})
+    for name in sorted(new_names - old_names):
+        non_breaking.append({"code": "ENTITY_ADDED", "entity": name})
+
+    for name in sorted(old_names & new_names):
+        oe, ne = old_defs[name], new_defs[name]
+        if not isinstance(oe, dict) or not isinstance(ne, dict):
+            continue
+        if oe.get("kind") and ne.get("kind") and oe["kind"] != ne["kind"]:
+            breaking.append({"code": "KIND_CHANGED", "entity": name,
+                             "old": oe["kind"], "new": ne["kind"]})
+        oel = oe.get("elements") or {}
+        nel = ne.get("elements") or {}
+        for col in sorted(set(oel) - set(nel)):
+            breaking.append({"code": "ELEMENT_REMOVED", "entity": name, "element": col})
+        for col in sorted(set(nel) - set(oel)):
+            item = {"code": "ELEMENT_ADDED", "entity": name, "element": col}
+            (breaking if nel[col].get("key") else non_breaking).append(
+                {**item, "note": "new key element"} if nel[col].get("key") else item)
+        for col in sorted(set(oel) & set(nel)):
+            ot = (oel[col] or {}).get("type")
+            nt = (nel[col] or {}).get("type")
+            if ot and nt and ot != nt:
+                if (ot, nt) in _SAFE_WIDENINGS:
+                    non_breaking.append({"code": "TYPE_WIDENED", "entity": name,
+                                         "element": col, "old": ot, "new": nt})
+                else:
+                    breaking.append({"code": "TYPE_CHANGED", "entity": name,
+                                     "element": col, "old": ot, "new": nt})
+            if bool((oel[col] or {}).get("key")) != bool((nel[col] or {}).get("key")):
+                breaking.append({"code": "KEY_CHANGED", "entity": name, "element": col})
+
+    return {"breaking": breaking, "non_breaking": non_breaking,
+            "summary": {"breaking": len(breaking), "non_breaking": len(non_breaking),
+                        "compatible": not breaking}}
+
+
+def render_csn_docs(csn: dict) -> str:
+    """Render a CSN document as a human-readable Markdown reference."""
+    defs = (csn or {}).get("definitions") or {}
+    if not isinstance(defs, dict) or not defs:
+        return "_No CSN definitions to document._"
+    lines: list[str] = []
+    for ename in sorted(defs):
+        edef = defs[ename] if isinstance(defs[ename], dict) else {}
+        label = edef.get("@EndUserText.label")
+        lines.append(f"### {ename}")
+        if label:
+            lines.append(f"*{label}*")
+        lines.append("")
+        lines.append("| Element | Type | Key | Label |")
+        lines.append("|---|---|:--:|---|")
+        for cname, cdef in (edef.get("elements") or {}).items():
+            cdef = cdef if isinstance(cdef, dict) else {}
+            typ = cdef.get("type", "")
+            if "length" in cdef:
+                typ += f"({cdef['length']})"
+            elif "precision" in cdef:
+                typ += f"({cdef['precision']},{cdef.get('scale', 0)})"
+            key = "🔑" if cdef.get("key") else ""
+            lines.append(f"| {cname} | {typ} | {key} | {cdef.get('@EndUserText.label', '')} |")
+        lines.append("")
+    return "\n".join(lines)

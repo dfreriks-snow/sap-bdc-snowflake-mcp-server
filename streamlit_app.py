@@ -629,9 +629,37 @@ def render_publish_page() -> None:
                 st.code(sql, language="sql")
                 st.download_button("⬇️ Download .sql", sql, file_name=f"{share}.sql")
             with tab_csn:
+                report = cb.validate_csn(csn)
+                if report["valid"] and not report["warnings"]:
+                    st.success(f"✅ CSN is valid ({report['entity_count']} entities).")
+                elif report["valid"]:
+                    st.warning(f"✅ Valid with {len(report['warnings'])} warning(s).")
+                else:
+                    st.error(f"❌ {len(report['errors'])} validation error(s).")
+                if report["errors"] or report["warnings"]:
+                    with st.expander("Validation details"):
+                        for e in report["errors"]:
+                            st.markdown(f"- ❌ {e}")
+                        for w in report["warnings"]:
+                            st.markdown(f"- ⚠️ {w}")
                 st.json(csn)
                 st.download_button("⬇️ Download CSN JSON", _json.dumps(csn, indent=2),
                                    file_name=f"{share}_csn.json")
+                st.markdown("**Compare against a previously published CSN (optional)**")
+                prior = st.file_uploader("Upload prior CSN JSON to diff", type=["json"],
+                                         key="csn_diff_upload")
+                if prior is not None:
+                    try:
+                        old_csn = _json.loads(prior.read())
+                        d = cb.diff_csn(old_csn, csn)
+                        if d["summary"].get("compatible"):
+                            st.success(f"✅ Compatible — {d['summary']['non_breaking']} "
+                                       "non-breaking change(s), 0 breaking.")
+                        else:
+                            st.error(f"❌ {d['summary']['breaking']} breaking change(s).")
+                        st.json(d)
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Could not diff: {exc}")
             with tab_ord:
                 st.json(ord_md)
                 st.download_button("⬇️ Download ORD JSON", _json.dumps(ord_md, indent=2),
